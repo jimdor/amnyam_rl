@@ -1,14 +1,14 @@
 import ray
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
-from env.amnyam_env import AmnyamEnv
+from env import AmnyamEnvModified
 from ray import tune, air
 from ray.rllib.core.rl_module.rl_module import RLModuleSpec
 from ray.rllib.algorithms.ppo.torch.default_ppo_torch_rl_module import DefaultPPOTorchRLModule
 from ray.rllib.connectors.env_to_module import FlattenObservations
 
 def env_creator(env_config):
-    return AmnyamEnv(**env_config, render_mode='silent', seed=None)
+    return AmnyamEnvModified(**env_config, render_mode='silent', seed=42)
 
 # Initialize Ray
 ray.init()
@@ -32,7 +32,7 @@ config = (
             module_class=DefaultPPOTorchRLModule,
             model_config={
                 "head_fcnet_hiddens": [256, 128],
-                "fcnet_hiddens": [1024, 512],
+                "fcnet_hiddens": [512, 256],
                 # "conv_filters": [
                 #     (16, 2, 1, 0),
                 # ],
@@ -53,7 +53,7 @@ config = (
         explore=True
     )
     .framework("torch")
-    # .debugging(seed=42)
+    .debugging(seed=42)
     .training(
         train_batch_size_per_learner=1000,
         minibatch_size=100,
@@ -75,7 +75,7 @@ tuner = tune.Tuner(
         storage_path="/Users/mihailivanov/cursor_projects/amnyam/chekhpoints",
         stop={"training_iteration": 10_000},
         checkpoint_config=air.CheckpointConfig(
-            checkpoint_frequency=100,
+            checkpoint_frequency=10,
             checkpoint_at_end=True,
             num_to_keep=1,
             checkpoint_score_attribute="env_runners/episode_return_mean",

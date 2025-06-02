@@ -41,12 +41,16 @@ def main():
             enable_rl_module_and_learner=True,
             enable_env_runner_and_connector_v2=True,
         )
-        .environment("amnyam", env_config={"grid_size": 10})
+        .environment("amnyam", env_config={"grid_size": 10,})
         .rl_module(
             rl_module_spec=RLModuleSpec(
                 module_class=DefaultPPOTorchRLModule,
                 model_config={
-                    "head_fcnet_hiddens": [128, 64],
+                    "head_fcnet_hiddens": [256, 128],
+                    "fcnet_hiddens": [1024, 512],
+                    # "conv_filters": [
+                    #     (16, 2, 1, 0),
+                    # ],
                     "fcnet_activation": "tanh",
                     "vf_share_layers": True,
                 }
@@ -74,7 +78,7 @@ def main():
     algo = config.build_algo()
 
     # Get the absolute path for the checkpoint
-    checkpoint_path = os.path.abspath("chekhpoints/PPO_2025-05-29_14-24-13/PPO_amnyam_72a6b_00000_0_2025-05-29_14-24-13/checkpoint_000238")
+    checkpoint_path = os.path.abspath("chekhpoints/PPO_2025-06-02_14-25-31/PPO_amnyam_4aeaa_00000_0_2025-06-02_14-25-31/checkpoint_000004")
     print(f"Loading checkpoint from: {checkpoint_path}")
     algo.restore(checkpoint_path)
 
@@ -82,7 +86,7 @@ def main():
 
     # Create environment
     print("Creating environment...", end="")
-    env = env_creator({"grid_size": 10, "render_mode": "pygame"})
+    env = env_creator({"grid_size": 10, "render_mode": "pygame", "seed": 444442})
     print(" ok")
 
     # Create the env-to-module pipeline from the checkpoint
