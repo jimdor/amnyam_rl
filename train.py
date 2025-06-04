@@ -7,17 +7,20 @@ from ray.rllib.core.rl_module.rl_module import RLModuleSpec
 from ray.rllib.algorithms.ppo.torch.default_ppo_torch_rl_module import DefaultPPOTorchRLModule
 from ray.rllib.connectors.env_to_module import FlattenObservations
 
+
 def env_creator(env_config):
-    return AmnyamEnv(**env_config, render_mode='silent', seed=None)
+    return AmnyamEnv(**env_config, render_mode='silent', seed=42)
+
+
+def _env_to_module(env):
+    return FlattenObservations(multi_agent=False)
+
 
 # Initialize Ray
 ray.init()
 
 # Register the environment
 register_env("amnyam", env_creator)
-
-def _env_to_module(env):
-    return FlattenObservations(multi_agent=False)
 
 # Configure the algorithm
 config = (
@@ -50,7 +53,8 @@ config = (
         num_env_runners=0,
         num_cpus_per_env_runner=1,
         num_envs_per_env_runner=2,
-        explore=True
+        explore=True,
+        rollout_fragment_length=100
     )
     .framework("torch")
     # .debugging(seed=42)
@@ -72,7 +76,7 @@ tuner = tune.Tuner(
     "PPO",
     param_space=config,
     run_config=air.RunConfig(
-        storage_path="/Users/mihailivanov/cursor_projects/amnyam/chekhpoints",
+        storage_path="/Users/mihailivanov/code/amnyam/chekhpoints",
         stop={"training_iteration": 10_000},
         checkpoint_config=air.CheckpointConfig(
             checkpoint_frequency=100,

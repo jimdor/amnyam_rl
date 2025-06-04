@@ -78,7 +78,7 @@ def main():
     algo = config.build_algo()
 
     # Get the absolute path for the checkpoint
-    checkpoint_path = os.path.abspath("chekhpoints/PPO_2025-06-02_14-25-31/PPO_amnyam_4aeaa_00000_0_2025-06-02_14-25-31/checkpoint_000004")
+    checkpoint_path = os.path.abspath("chekhpoints/PPO_2025-06-02_17-56-57/PPO_amnyam_d488c_00000_0_2025-06-02_17-56-57/checkpoint_000001")
     print(f"Loading checkpoint from: {checkpoint_path}")
     algo.restore(checkpoint_path)
 
