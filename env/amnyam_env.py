@@ -4,6 +4,7 @@ from gymnasium import spaces
 import pygame
 import sys
 import os
+from collections import deque
 
 
 class AmnyamEnv(gym.Env):
@@ -19,7 +20,8 @@ class AmnyamEnv(gym.Env):
         5: "age_difference_from_perfect",
         6: "fruit_expiration_urgency",
         7: "optimal_harvest_timing",
-        8: "episode_progress",
+        8: "agent_position_history",
+        9: "episode_progress",
     }
 
     def __init__(self,
@@ -81,9 +83,10 @@ class AmnyamEnv(gym.Env):
         self.fruits = {}  # Dictionary: (x,y) -> {'age': float}
         self.steps = 0
         self.render_mode = render_mode
+        self.agent_position_history = deque(maxlen=10)
 
         if self.render_mode == 'human':
-            self.render_digits_len = len(str(self.MAX_AGE)) - 1
+            self.render_digits_len = len(str(self.MAX_AGE))
         else:
             self.render_digits_len = None
 
@@ -155,9 +158,9 @@ class AmnyamEnv(gym.Env):
             # Channel 3: Perfect age target (constant)
             full_obs[pos[0], pos[1], 3] = self.PERFECT_AGE / self.MAX_AGE
 
-            # Channel 4: Distance to agent (normalized)
-            distance = np.sqrt((pos[0] - self.agent_pos[0])**2 + (pos[1] - self.agent_pos[1])**2)
-            max_distance = np.sqrt(self.grid_height**2 + self.grid_width**2)
+            # Channel 4: Manhattan distance to agent (normalized)
+            distance = abs(pos[0] - self.agent_pos[0]) + abs(pos[1] - self.agent_pos[1])
+            max_distance = self.grid_height + self.grid_width - 2
             full_obs[pos[0], pos[1], 4] = distance / max_distance
 
             # Channel 5: Age difference from perfect age (normalized)
@@ -175,8 +178,17 @@ class AmnyamEnv(gym.Env):
             else:
                 full_obs[pos[0], pos[1], 7] = 0.0
 
-        # Channel 8: Episode progress (global)
-        full_obs[:, :, 8] = self.steps / self.max_episode_steps
+        # Channel 8: Agent position history
+        for steps_ago, pos in enumerate(reversed(self.agent_position_history)):
+            if steps_ago > 0:  # Skip current position (steps_ago = 0)
+                history_value = 1.0 - 0.1 * steps_ago
+                if history_value > 0:  # Only add positive values
+                    # Add to existing value (in case agent visited same position multiple times)
+                    full_obs[pos[0], pos[1], 8] = max(full_obs[pos[0], pos[1], 8], history_value)
+
+        # Channel 9: Episode progress (global temporal information)
+        episode_progress = self.steps / self.max_episode_steps
+        full_obs[:, :, 9] = episode_progress
 
         # Extract only requested channels
         for i, channel_idx in enumerate(self.observation_channels):
@@ -249,6 +261,9 @@ class AmnyamEnv(gym.Env):
                 self.np_random.integers(0, self.grid_width)
             ])
 
+        self.agent_position_history.clear()
+        self.agent_position_history.append(tuple(self.agent_pos))
+
         # Initialize fruits based on mode
         if self.fruit_spawning_mode == 'random':
             self.fruits = {}
@@ -299,6 +314,8 @@ class AmnyamEnv(gym.Env):
 
                 # Update position
                 self.agent_pos = np.array([new_x, new_y])
+
+        self.agent_position_history.append(tuple(self.agent_pos))
 
         # Age existing fruits
         fruits_to_remove = []
@@ -446,7 +463,8 @@ class AmnyamEnv(gym.Env):
                 f"Fruits: {len(self.fruits)}",
                 f"Mode: {self.fruit_spawning_mode}({self.fruit_spawning_param})",
                 f"Perfect Age: {self.PERFECT_AGE}, Max Age: {self.MAX_AGE}",
-                f"Channels: {len(self.observation_channels)} of {len(self.CHANNEL_NAMES)}"
+                f"Channels: {len(self.observation_channels)} of {len(self.CHANNEL_NAMES)}",
+                f"Seed: {self.seed}"
             ]
 
             for i, line in enumerate(info_lines):
@@ -466,25 +484,24 @@ if __name__ == "__main__":
     import time
 
     env = AmnyamEnv(
-        # render_mode='human',
-        render_mode='pygame',
         observation_channels=(0, 1, 2, 3, 4, 5, 6, 7, 8),
-        max_episode_steps=150,
-        grid_size=(5, 20),
-        # fruit_spawning=('random', 1),
-        fruit_spawning=('strategic', 5),
-        # seed=42,
+        grid_size=(5, 60),
+        max_episode_steps=80,
+        fruit_spawning=('strategic', 10),
+        render_mode='human',
         seed=None
         )
 
-    obs, info = env.reset()
-    env.render()
-
-    terminated = truncated = False
-
-    while not (terminated or truncated):
-        action = env.action_space.sample()
-        obs, reward, terminated, truncated, info = env.step(action)
-
+    for i in range(3):
+        obs, info = env.reset()
         env.render()
-        # time.sleep(0.25)
+        exit()
+
+        terminated = truncated = False
+
+        while not (terminated or truncated):
+            action = env.action_space.sample()
+            obs, reward, terminated, truncated, info = env.step(action)
+
+            env.render()
+            # time.sleep(0.25)
