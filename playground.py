@@ -48,19 +48,21 @@ def print_episode_summary(total_reward, steps, fruits_eaten):
 def main(
         render_mode: str = 'human',
         observation_channels=None,
-        max_episode_steps=100,
-        grid_size=(10, 10),
-        fruit_spawning=('random', 1),
+        max_episode_steps=120,
+        grid_size=(5, 60),
+        fruit_spawning=('strategic', 10),
+        agent_count=1,
         seed=None
 
 ):
     # Create and initialize the environment
     env = AmnyamEnv(
-        render_mode="pygame",
+        render_mode=render_mode,
         observation_channels=observation_channels,
         max_episode_steps=max_episode_steps,
         grid_size=grid_size,
         fruit_spawning=fruit_spawning,
+        agent_count=agent_count,
         seed=seed)
     observation, info = env.reset()
 
@@ -170,10 +172,11 @@ def main(
 
 if __name__ == "__main__":
     main(
-        render_mode='pygame',
-        observation_channels=(0, 1, 2, 3, 4, 5, 6, 7, 8),
+        observation_channels=(0, 2, 3, 4, 6, 8, 9, 10),
+        grid_size=(5, 20),
         max_episode_steps=50,
-        grid_size=(7, 7),
-        fruit_spawning=('random', 1),
+        fruit_spawning=('strategic', 5),
+        agent_count=1,
+        render_mode='pygame',
         seed=42
     )

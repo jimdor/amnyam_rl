@@ -10,12 +10,14 @@ from ray.rllib.connectors.env_to_module import FlattenObservations
 
 def env_creator(env_config):
     return AmnyamEnv(**env_config,
-                     observation_channels=(0, 1, 2, 3, 4, 5, 6, 7, 8),
-                     grid_size=(9, 9),
-                     max_episode_steps=100,
-                     fruit_spawning=('random', 1),
-                     render_mode='human',
-                     seed=None)
+                     observation_channels=(0, 2, 3, 4, 6, 8, 9, 10),
+                     grid_size=(5, 20),
+                     max_episode_steps=50,
+                     fruit_spawning=('strategic', 5),
+                     agent_count=1,
+                     render_mode='silent',
+                     seed=None
+                     )
 
 
 def _env_to_module(env):
@@ -65,7 +67,7 @@ config = (
     .framework("torch")
     # .debugging(seed=42)
     .training(
-        train_batch_size_per_learner=1000,
+        train_batch_size_per_learner=5000,
         minibatch_size=100,
         lr=0.00003,
         gamma=0.999,
@@ -83,6 +85,7 @@ tuner = tune.Tuner(
     param_space=config,
     run_config=air.RunConfig(
         storage_path="/Users/mihailivanov/code/amnyam/checkpoints",
+        name="one_agent",
         stop={"training_iteration": 10_000},
         checkpoint_config=air.CheckpointConfig(
             checkpoint_frequency=100,

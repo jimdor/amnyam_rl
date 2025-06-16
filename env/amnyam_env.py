@@ -22,6 +22,7 @@ class AmnyamEnv(gym.Env):
         7: "optimal_harvest_timing",
         8: "agent_position_history",
         9: "episode_progress",
+        10: "current_agent_mask",  # New channel for current agent
     }
 
     def __init__(self,
@@ -30,6 +31,7 @@ class AmnyamEnv(gym.Env):
                  max_episode_steps=100,
                  grid_size=(10, 10),  # (height, width) or single int for square
                  fruit_spawning=('random', 1.0),  # ('mode', temperature/group_count)
+                 agent_count=1,  # New parameter for number of agents
                  seed=None):
         super().__init__()
 
@@ -38,6 +40,14 @@ class AmnyamEnv(gym.Env):
         self.max_episode_steps = max_episode_steps
         self.observation_channels = observation_channels
         self.fruit_spawning_mode, self.fruit_spawning_param = fruit_spawning
+        self.agent_count = agent_count
+
+        # Validate agent count and strategic mode requirement
+        if self.agent_count > 1 and self.fruit_spawning_mode != 'strategic':
+            raise ValueError("agent_count > 1 must be used only with strategic mode")
+
+        if self.agent_count < 1:
+            raise ValueError("agent_count must be at least 1")
 
         # Validate observation channels
         for ch in observation_channels:
@@ -78,12 +88,13 @@ class AmnyamEnv(gym.Env):
             dtype=np.float32
         )
 
-        # Initialize state
-        self.agent_pos = None
+        # Initialize state for multiple agents
+        self.agent_positions = None  # List of agent positions
+        self.current_agent_idx = 0   # Which agent's turn it is
         self.fruits = {}  # Dictionary: (x,y) -> {'age': float}
         self.steps = 0
         self.render_mode = render_mode
-        self.agent_position_history = deque(maxlen=10)
+        self.agent_position_histories = None  # List of deques for each agent
 
         if self.render_mode == 'human':
             self.render_digits_len = len(str(self.MAX_AGE))
@@ -110,11 +121,11 @@ class AmnyamEnv(gym.Env):
 
         self.window_size = (
             self.view_width * self.cell_size + 60,
-            self.view_height * self.cell_size + 200
+            self.view_height * self.cell_size + 250  # More space for multi-agent info
         )
 
         self.screen = pygame.display.set_mode(self.window_size)
-        pygame.display.set_caption("Amnyam Smart-Agile Environment")
+        pygame.display.set_caption("Amnyam Smart-Agile Environment (Multi-Agent)")
         self.clock = pygame.time.Clock()
 
         # Colors
@@ -124,6 +135,15 @@ class AmnyamEnv(gym.Env):
         self.GREEN = (0, 255, 0)
         self.BLUE = (0, 0, 255)
         self.GRAY = (200, 200, 200)
+        self.PURPLE = (128, 0, 128)
+        self.ORANGE = (255, 165, 0)
+        self.CYAN = (0, 255, 255)
+
+        # Agent colors for multi-agent rendering
+        self.AGENT_COLORS = [
+            self.BLUE, self.RED, self.GREEN, self.PURPLE,
+            self.ORANGE, self.CYAN, (255, 192, 203), (165, 42, 42)
+        ]
 
         # Load amnyam image
         try:
@@ -134,65 +154,76 @@ class AmnyamEnv(gym.Env):
             print(f"Could not load agent image: {e}")
             self.agent_image = None
 
+    @property
+    def current_agent_pos(self):
+        """Get current agent's position"""
+        return self.agent_positions[self.current_agent_idx]
+
     def _get_observation(self):
-        """Generate observation with only requested channels"""
-        num_channels = len(self.observation_channels)
-        obs = np.zeros((self.grid_height, self.grid_width, num_channels), dtype=np.float32)
+        h, w = self.grid_height, self.grid_width
+        # robust mapping: logical channel → column index in obs
+        col = {ch: i for i, ch in enumerate(self.observation_channels)}
 
-        # Calculate all possible channels, then extract requested ones
-        full_obs = np.zeros((self.grid_height, self.grid_width, len(self.CHANNEL_NAMES)), dtype=np.float32)
+        obs = np.zeros((h, w, len(self.observation_channels)), dtype=np.float32)
 
-        # Channel 0: Agent position
-        full_obs[self.agent_pos[0], self.agent_pos[1], 0] = 1.0
+        if 0 in col:
+            for agent_pos in self.agent_positions:
+                obs[agent_pos[0], agent_pos[1], col[0]] = 1.0
 
-        # Process fruits for other channels
-        for pos, fruit_info in self.fruits.items():
-            age = fruit_info['age']
+        if 10 in col:
+            current_pos = self.current_agent_pos
+            obs[current_pos[0], current_pos[1], col[10]] = 1.0
 
-            # Channel 1: Fruit locations
-            full_obs[pos[0], pos[1], 1] = 1.0
+        inv_max_dist = 1.0 / (h + w - 2)
+        pa_ratio = self.PERFECT_AGE / self.MAX_AGE
 
-            # Channel 2: Normalized fruit age
-            full_obs[pos[0], pos[1], 2] = min(1.0, age / self.MAX_AGE)
+        if self.fruits:
+            # keep full precision during maths
+            pos = np.array(list(self.fruits.keys()), dtype=np.int16)
+            ages = np.fromiter((f['age'] for f in self.fruits.values()),
+                               dtype=np.float64, count=len(self.fruits))
 
-            # Channel 3: Perfect age target (constant)
-            full_obs[pos[0], pos[1], 3] = self.PERFECT_AGE / self.MAX_AGE
+            x, y = pos[:, 0], pos[:, 1]
 
-            # Channel 4: Manhattan distance to agent (normalized)
-            distance = abs(pos[0] - self.agent_pos[0]) + abs(pos[1] - self.agent_pos[1])
-            max_distance = self.grid_height + self.grid_width - 2
-            full_obs[pos[0], pos[1], 4] = distance / max_distance
+            if 1 in col:
+                obs[x, y, col[1]] = 1.0
 
-            # Channel 5: Age difference from perfect age (normalized)
-            age_diff = abs(self.PERFECT_AGE - age)
-            full_obs[pos[0], pos[1], 5] = min(1.0, age_diff / self.PERFECT_AGE)
+            if 2 in col:
+                obs[x, y, col[2]] = np.clip(ages / self.MAX_AGE, 0.0, 1.0)
 
-            # Channel 6: Fruit expiration urgency
-            steps_to_expire = max(0, self.MAX_AGE - age)
-            full_obs[pos[0], pos[1], 6] = steps_to_expire / self.MAX_AGE
+            if 3 in col:
+                obs[x, y, col[3]] = pa_ratio
 
-            # Channel 7: Optimal harvest timing
-            steps_to_perfect = self.PERFECT_AGE - age
-            if steps_to_perfect > 0:
-                full_obs[pos[0], pos[1], 7] = steps_to_perfect / self.PERFECT_AGE
-            else:
-                full_obs[pos[0], pos[1], 7] = 0.0
+            if 4 in col:
+                current_pos = self.current_agent_pos
+                d = (np.abs(x - current_pos[0]) +
+                     np.abs(y - current_pos[1])) * inv_max_dist
+                obs[x, y, col[4]] = d.astype(np.float32)
 
-        # Channel 8: Agent position history
-        for steps_ago, pos in enumerate(reversed(self.agent_position_history)):
-            if steps_ago > 0:  # Skip current position (steps_ago = 0)
-                history_value = 1.0 - 0.1 * steps_ago
-                if history_value > 0:  # Only add positive values
-                    # Add to existing value (in case agent visited same position multiple times)
-                    full_obs[pos[0], pos[1], 8] = max(full_obs[pos[0], pos[1], 8], history_value)
+            if 5 in col:
+                obs[x, y, col[5]] = np.clip(np.abs(ages - self.PERFECT_AGE)
+                                            / self.PERFECT_AGE, 0.0, 1.0)
 
-        # Channel 9: Episode progress (global temporal information)
-        episode_progress = self.steps / self.max_episode_steps
-        full_obs[:, :, 9] = episode_progress
+            if 6 in col:
+                obs[x, y, col[6]] = (self.MAX_AGE - ages) / self.MAX_AGE
 
-        # Extract only requested channels
-        for i, channel_idx in enumerate(self.observation_channels):
-            obs[:, :, i] = full_obs[:, :, channel_idx]
+            if 7 in col:
+                delta = self.PERFECT_AGE - ages
+                ok = delta > 0
+                obs[x[ok], y[ok], col[7]] = delta[ok] / self.PERFECT_AGE
+
+        if 8 in col:
+            current_history = self.agent_position_histories[self.current_agent_idx]
+            for steps_ago, p in enumerate(reversed(current_history)):
+                if steps_ago == 0:
+                    continue
+                v = 1.0 - 0.1 * steps_ago
+                if v <= 0.0:
+                    break
+                obs[p[0], p[1], col[8]] = max(obs[p[0], p[1], col[8]], v)
+
+        if 9 in col:
+            obs[:, :, col[9]] = self.steps / self.max_episode_steps
 
         return obs
 
@@ -203,7 +234,9 @@ class AmnyamEnv(gym.Env):
             for _ in range(100):
                 pos = (self.np_random.integers(0, self.grid_height),
                        self.np_random.integers(0, self.grid_width))
-                if pos != tuple(self.agent_pos) and pos not in self.fruits:
+                # Check if position conflicts with any agent
+                agent_positions_tuple = [tuple(agent_pos) for agent_pos in self.agent_positions]
+                if pos not in agent_positions_tuple and pos not in self.fruits:
                     initial_age = self.np_random.uniform(0, min(3, self.PERFECT_AGE / 2))
                     self.fruits[pos] = {'age': initial_age}
                     break
@@ -215,12 +248,12 @@ class AmnyamEnv(gym.Env):
         # Distribute groups along the width
         for group in range(self.fruit_groups):
             # Calculate group center position
-            group_y = (group + 1) * self.grid_width // (self.fruit_groups)
+            group_y = (group + 1) * self.grid_width // (self.fruit_groups + 1)
             group_x = self.grid_height // 2
 
             # Add fruits around this center
-            fruits_per_group = 2
-            max_attempts_per_fruit = 10  # Prevent infinite loops
+            fruits_per_group = max(2, self.agent_count)  # Scale with agent count
+            max_attempts_per_fruit = 20  # Prevent infinite loops
 
             for i in range(fruits_per_group):
                 placed = False
@@ -229,16 +262,19 @@ class AmnyamEnv(gym.Env):
                 while not placed and attempts < max_attempts_per_fruit:
                     # Add positional variation
                     x = max(0, min(self.grid_height - 1,
-                                   group_x + self.np_random.integers(-2, 2)))
+                                   group_x + self.np_random.integers(-2, 3)))
                     y = max(0, min(self.grid_width - 1,
-                                   group_y + self.np_random.integers(-2, 2)))
+                                   group_y + self.np_random.integers(-2, 3)))
                     pos = (x, y)
 
-                    if pos != tuple(self.agent_pos) and pos not in self.fruits:
-                        # Strategic aging: fruits should be ready when agent arrives
-                        time_to_reach = abs(group_y - self.agent_pos[1])  # Assuming start at x=0
+                    # Check if position conflicts with any agent
+                    agent_positions_tuple = [tuple(agent_pos) for agent_pos in self.agent_positions]
+                    if pos not in agent_positions_tuple and pos not in self.fruits:
+                        # Strategic aging: fruits should be ready when agents arrive
+                        min_time_to_reach = min(abs(group_y - agent_pos[1]) for agent_pos in self.agent_positions)
                         age_variation = self.np_random.integers(-3, 3)
-                        initial_age = max(0, self.PERFECT_AGE - time_to_reach + age_variation)
+                        discount = -4
+                        initial_age = max(0, self.PERFECT_AGE - min_time_to_reach + age_variation + discount)
                         self.fruits[pos] = {'age': initial_age}
                         placed = True
 
@@ -250,19 +286,60 @@ class AmnyamEnv(gym.Env):
             seed = self.seed
         super().reset(seed=seed)
 
+        # Initialize multiple agents
+        self.agent_positions = []
+        self.agent_position_histories = []
+        self.current_agent_idx = 0
+
         # Agent placement strategy
         if self.fruit_spawning_mode == 'strategic':
-            # Start at left edge for horizontal strategic layout
-            self.agent_pos = np.array([self.grid_height // 2, 0])
-        else:
-            # Random placement
-            self.agent_pos = np.array([
-                self.np_random.integers(0, self.grid_height),
-                self.np_random.integers(0, self.grid_width)
-            ])
+            # Start agents at left edge with vertical spacing
+            for i in range(self.agent_count):
+                y_pos = max(0, min(self.grid_height - 1,
+                                   i * self.grid_height // max(1, self.agent_count - 1)
+                                   if self.agent_count > 1 else self.grid_height // 2))
+                agent_pos = np.array([y_pos, 0])
+                self.agent_positions.append(agent_pos)
 
-        self.agent_position_history.clear()
-        self.agent_position_history.append(tuple(self.agent_pos))
+                # Initialize position history for each agent
+                history = deque(maxlen=10)
+                history.append(tuple(agent_pos))
+                self.agent_position_histories.append(history)
+        else:
+            # Random placement for each agent
+            for i in range(self.agent_count):
+                # Try to find non-overlapping positions
+                placed = False
+                for _ in range(100):
+                    agent_pos = np.array([
+                        self.np_random.integers(0, self.grid_height),
+                        self.np_random.integers(0, self.grid_width)
+                    ])
+                    # Check if position conflicts with existing agents
+                    conflict = False
+                    for existing_pos in self.agent_positions:
+                        if np.array_equal(agent_pos, existing_pos):
+                            conflict = True
+                            break
+
+                    if not conflict:
+                        self.agent_positions.append(agent_pos)
+                        history = deque(maxlen=10)
+                        history.append(tuple(agent_pos))
+                        self.agent_position_histories.append(history)
+                        placed = True
+                        break
+
+                if not placed:
+                    # Fallback: place at random position even if overlapping
+                    agent_pos = np.array([
+                        self.np_random.integers(0, self.grid_height),
+                        self.np_random.integers(0, self.grid_width)
+                    ])
+                    self.agent_positions.append(agent_pos)
+                    history = deque(maxlen=10)
+                    history.append(tuple(agent_pos))
+                    self.agent_position_histories.append(history)
 
         # Initialize fruits based on mode
         if self.fruit_spawning_mode == 'random':
@@ -273,7 +350,8 @@ class AmnyamEnv(gym.Env):
                 for _ in range(100):  # Try up to 100 times
                     pos = (self.np_random.integers(0, self.grid_height),
                            self.np_random.integers(0, self.grid_width))
-                    if pos != tuple(self.agent_pos) and pos not in self.fruits:
+                    agent_positions_tuple = [tuple(agent_pos) for agent_pos in self.agent_positions]
+                    if pos not in agent_positions_tuple and pos not in self.fruits:
                         initial_age = self.np_random.uniform(0, min(3, self.PERFECT_AGE / 2))
                         self.fruits[pos] = {'age': initial_age}
                         break
@@ -281,58 +359,84 @@ class AmnyamEnv(gym.Env):
             self._spawn_fruit_strategic()
 
         self.steps = 0
-        return self._get_observation(), {}
+        obs = self._get_observation()
+
+        return obs, {}
 
     def step(self, action):
         """Execute one environment step"""
         reward = 0
         terminated = False
         truncated = False
-        info = {}
+        info = {'current_agent': self.current_agent_idx}
 
-        # Handle movement
+        current_pos = self.current_agent_pos
+
+        # Handle movement for current agent
         if action == 0:  # Stay
             pass
         else:  # Movement: 1=up, 2=right, 3=down, 4=left
             directions = [(0, 0), (-1, 0), (0, 1), (1, 0), (0, -1)]
             dx, dy = directions[action]
 
-            new_x = self.agent_pos[0] + dx
-            new_y = self.agent_pos[1] + dy
+            new_x = current_pos[0] + dx
+            new_y = current_pos[1] + dy
 
             # Check bounds
             if 0 <= new_x < self.grid_height and 0 <= new_y < self.grid_width:
                 new_pos = (new_x, new_y)
 
-                # Check for fruit consumption
-                if new_pos in self.fruits:
-                    fruit_age = self.fruits[new_pos]['age']
-                    # Reward based on proximity to perfect age
-                    age_score = 1.0 - abs(self.PERFECT_AGE - fruit_age) / self.PERFECT_AGE
-                    reward += max(0, age_score)  # Ensure non-negative
-                    del self.fruits[new_pos]
+                # CHECK FOR COLLISION WITH OTHER AGENTS
+                collision = False
+                for other_agent_idx, other_agent_pos in enumerate(self.agent_positions):
+                    if (other_agent_idx != self.current_agent_idx and
+                       tuple(other_agent_pos) == new_pos):
+                        collision = True
+                        info['collision_attempted'] = True
+                        info['blocked_by_agent'] = other_agent_idx
+                        break
 
-                # Update position
-                self.agent_pos = np.array([new_x, new_y])
+                if not collision:
+                    # Check for fruit consumption
+                    if new_pos in self.fruits:
+                        fruit_age = self.fruits[new_pos]['age']
+                        # Reward based on proximity to perfect age
+                        age_score = 1.0 - abs(self.PERFECT_AGE - fruit_age) / self.PERFECT_AGE
+                        reward += max(0, age_score)  # Ensure non-negative
+                        del self.fruits[new_pos]
+                        info['fruit_consumed'] = True
+                        info['fruit_age'] = fruit_age
+                        info['age_score'] = age_score
 
-        self.agent_position_history.append(tuple(self.agent_pos))
+                    # Update position (only if no collision)
+                    self.agent_positions[self.current_agent_idx] = np.array([new_x, new_y])
+                # If collision occurred, agent stays in current position
 
-        # Age existing fruits
-        fruits_to_remove = []
-        for pos, fruit_info in self.fruits.items():
-            fruit_info['age'] += 1.0
-            if fruit_info['age'] >= self.MAX_AGE:
-                fruits_to_remove.append(pos)
+        # Update position history for current agent
+        self.agent_position_histories[self.current_agent_idx]\
+            .append(tuple(self.agent_positions[self.current_agent_idx]))
 
-        # Remove expired fruits
-        for pos in fruits_to_remove:
-            del self.fruits[pos]
+        # Switch to next agent (turn-based)
+        self.current_agent_idx = (self.current_agent_idx + 1) % self.agent_count
 
-        # Spawn new fruits (random mode only)
-        if self.fruit_spawning_mode == 'random':
-            self._spawn_fruit_random()
+        # Only increment steps when all agents have had their turn
+        if self.current_agent_idx == 0:
+            # Age existing fruits
+            fruits_to_remove = []
+            for pos, fruit_info in self.fruits.items():
+                fruit_info['age'] += 1.0
+                if fruit_info['age'] >= self.MAX_AGE:
+                    fruits_to_remove.append(pos)
 
-        self.steps += 1
+            # Remove expired fruits
+            for pos in fruits_to_remove:
+                del self.fruits[pos]
+
+            # Spawn new fruits (random mode only)
+            if self.fruit_spawning_mode == 'random':
+                self._spawn_fruit_random()
+
+            self.steps += 1
 
         # Check termination conditions
         if self.steps >= self.max_episode_steps:
@@ -342,18 +446,33 @@ class AmnyamEnv(gym.Env):
         if len(self.fruits) == 0 and self.fruit_spawning_mode == 'strategic':
             terminated = True
 
-        return self._get_observation(), reward, terminated, truncated, info
+        obs = self._get_observation()
+
+        return obs, reward, terminated, truncated, info
+
 
     def render(self):
         """Render the environment"""
         if self.render_mode == "human":
             os.system('cls' if os.name == 'nt' else 'clear')
             print(f"\n=== Step {self.steps}/{self.max_episode_steps} ===")
+            print(f"Current Agent: {self.current_agent_idx + 1}/{self.agent_count}")
+
             for i in range(self.grid_height):
                 for j in range(self.grid_width):
-                    if (i, j) == tuple(self.agent_pos):
-                        # Scale agent symbol: center 'A' with underscores
-                        agent_symbol = "A".center(self.render_digits_len, "_")
+                    # Check if any agent is at this position
+                    agent_at_pos = None
+                    for agent_idx, agent_pos in enumerate(self.agent_positions):
+                        if (i, j) == tuple(agent_pos):
+                            agent_at_pos = agent_idx
+                            break
+
+                    if agent_at_pos is not None:
+                        # Show agent number, highlight current agent
+                        if agent_at_pos == self.current_agent_idx:
+                            agent_symbol = f"{agent_at_pos + 1}".center(self.render_digits_len + 1, "_")
+                        else:
+                            agent_symbol = f"{agent_at_pos + 1}".center(self.render_digits_len, "_")
                         print(agent_symbol, end=" ")
                     elif (i, j) in self.fruits:
                         age = int(self.fruits[(i, j)]['age'])
@@ -365,7 +484,8 @@ class AmnyamEnv(gym.Env):
                         print(empty_symbol, end=" ")
                 print()
 
-            print(f"Fruits: {len(self.fruits)}, Mode: {self.fruit_spawning_mode}({self.fruit_spawning_param})")
+            print(f"Agents: {self.agent_count}, Fruits: {len(self.fruits)},"
+                  f"Mode: {self.fruit_spawning_mode}({self.fruit_spawning_param})")
             print(f"MAX_AGE: {self.MAX_AGE}, PERFECT_AGE: {self.PERFECT_AGE}")
 
         elif self.render_mode == "pygame":
@@ -376,12 +496,13 @@ class AmnyamEnv(gym.Env):
 
             self.screen.fill(self.WHITE)
 
-            # Calculate camera position
+            # Calculate camera position based on current agent
             if self.use_camera:
+                current_pos = self.current_agent_pos
                 camera_x = max(0, min(self.grid_width - self.view_width,
-                                      self.agent_pos[1] - self.view_width // 2))
+                                      current_pos[1] - self.view_width // 2))
                 camera_y = max(0, min(self.grid_height - self.view_height,
-                                      self.agent_pos[0] - self.view_height // 2))
+                                      current_pos[0] - self.view_height // 2))
             else:
                 camera_x = camera_y = 0
 
@@ -433,33 +554,49 @@ class AmnyamEnv(gym.Env):
                 ))
                 self.screen.blit(text, text_rect)
 
-            # Draw agent
-            if self.use_camera:
-                screen_x = self.agent_pos[1] - camera_x
-                screen_y = self.agent_pos[0] - camera_y
-            else:
-                screen_x = self.agent_pos[1]
-                screen_y = self.agent_pos[0]
+            # Draw all agents
+            for agent_idx, agent_pos in enumerate(self.agent_positions):
+                if self.use_camera:
+                    if not (camera_x <= agent_pos[1] < camera_x + self.view_width and
+                            camera_y <= agent_pos[0] < camera_y + self.view_height):
+                        continue
+                    screen_x = agent_pos[1] - camera_x
+                    screen_y = agent_pos[0] - camera_y
+                else:
+                    screen_x = agent_pos[1]
+                    screen_y = agent_pos[0]
 
-            if self.agent_image:
-                self.screen.blit(self.agent_image,
-                                 (screen_x * self.cell_size + 6,
-                                  screen_y * self.cell_size + 6))
-            else:
-                agent_rect = pygame.Rect(
-                    screen_x * self.cell_size + 6,
-                    screen_y * self.cell_size + 6,
-                    self.cell_size - 12,
-                    self.cell_size - 12
-                )
-                pygame.draw.rect(self.screen, self.BLUE, agent_rect)
+                # Highlight current agent with a border
+                if agent_idx == self.current_agent_idx:
+                    border_rect = pygame.Rect(
+                        screen_x * self.cell_size + 2,
+                        screen_y * self.cell_size + 2,
+                        self.cell_size - 4,
+                        self.cell_size - 4
+                    )
+                    pygame.draw.rect(self.screen, self.BLACK, border_rect, 4)
+
+                if self.agent_image:
+                    self.screen.blit(self.agent_image,
+                                     (screen_x * self.cell_size + 6,
+                                      screen_y * self.cell_size + 6))
+
+                # Draw agent number
+                font = pygame.font.Font(None, 24)
+                text = font.render(str(agent_idx + 1), True, self.WHITE)
+                text_rect = text.get_rect(center=(
+                    screen_x * self.cell_size + self.cell_size // 2,
+                    screen_y * self.cell_size + self.cell_size // 2
+                ))
+                self.screen.blit(text, text_rect)
 
             # Draw information
-            font = pygame.font.Font(None, 36)
+            font = pygame.font.Font(None, 28)
             y_offset = self.view_height * self.cell_size + 10
 
             info_lines = [
                 f"Steps: {self.steps}/{self.max_episode_steps}",
+                f"Current Agent: {self.current_agent_idx + 1}/{self.agent_count}",
                 f"Fruits: {len(self.fruits)}",
                 f"Mode: {self.fruit_spawning_mode}({self.fruit_spawning_param})",
                 f"Perfect Age: {self.PERFECT_AGE}, Max Age: {self.MAX_AGE}",
@@ -469,7 +606,7 @@ class AmnyamEnv(gym.Env):
 
             for i, line in enumerate(info_lines):
                 text = font.render(line, True, self.BLACK)
-                self.screen.blit(text, (10, y_offset + i * 30))
+                self.screen.blit(text, (10, y_offset + i * 25))
 
             pygame.display.flip()
             self.clock.tick(self.metadata["render_fps"])
@@ -484,24 +621,31 @@ if __name__ == "__main__":
     import time
 
     env = AmnyamEnv(
-        observation_channels=(0, 1, 2, 3, 4, 5, 6, 7, 8),
-        grid_size=(5, 60),
-        max_episode_steps=80,
-        fruit_spawning=('strategic', 10),
-        render_mode='human',
-        seed=None
+        observation_channels=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+        grid_size=(5, 20),
+        max_episode_steps=50,
+        fruit_spawning=('strategic', 5),
+        agent_count=3,  # Test with 3 agents
+        render_mode='pygame',
+        seed=42
         )
 
-    for i in range(3):
+    for i in range(1):
         obs, info = env.reset()
         env.render()
-        exit()
+        # time.sleep(1)
 
         terminated = truncated = False
+        step_count = 0
 
-        while not (terminated or truncated):
+        while not (terminated or truncated) and step_count < 40:
             action = env.action_space.sample()
             obs, reward, terminated, truncated, info = env.step(action)
 
+            print(f"Agent {info['current_agent']}, Reward: {reward:.3f}")
+            if 'fruit_consumed' in info:
+                print(f"  -> Fruit consumed! Age: {info['fruit_age']:.1f}, Score: {info['age_score']:.3f}")
+
             env.render()
-            # time.sleep(0.25)
+            time.sleep(1.0)
+            step_count += 1
