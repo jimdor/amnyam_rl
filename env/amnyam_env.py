@@ -110,7 +110,7 @@ class AmnyamEnv(gym.Env):
         self.cell_size = 80
 
         # Camera view settings for large grids
-        if self.grid_width > 15 or self.grid_height > 15:
+        if self.grid_width > 25 or self.grid_height > 25:
             self.use_camera = True
             self.view_width = min(15, self.grid_width)
             self.view_height = min(10, self.grid_height)

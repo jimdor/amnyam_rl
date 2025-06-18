@@ -24,11 +24,13 @@ import time
 def env_creator(env_config):
     return AmnyamEnv(**env_config,
                      render_mode='pygame',
-                     observation_channels=(0, 1, 2, 3, 4, 5, 6, 7),
+                     observation_channels=(0, 2, 3, 4, 6, 8, 9, 10),
                      max_episode_steps=50,
-                     grid_size=(7, 7),
-                     fruit_spawning=('random', 1),
-                     seed=42)
+                     grid_size=(5, 20),
+                     fruit_spawning=('strategic', 5),
+                     seed=None,
+                     agent_count=2,
+                     )
 
 
 def _env_to_module(env):
@@ -54,18 +56,19 @@ def main():
             rl_module_spec=RLModuleSpec(
                 module_class=DefaultPPOTorchRLModule,
                 model_config={
-                    "head_fcnet_hiddens": [100, 50],
-                    "fcnet_hiddens": [400, 200],
+                    "head_fcnet_hiddens": [128, 64],
+                    "fcnet_hiddens": [512, 256],
                     # "conv_filters": [
                     #     (16, 2, 1, 0),
                     # ],
                     "fcnet_activation": "relu",
-                    "vf_share_layers": True,
+                    "vf_share_layers": False,
                 }
             )
         )
         .learners(
-            num_learners=0
+            num_learners=0,
+            num_gpus_per_learner=0
         )
         .env_runners(
             env_to_module_connector=_env_to_module,
@@ -86,9 +89,9 @@ def main():
     algo = config.build_algo()
 
     # Get the absolute path for the checkpoint
-    checkpoint_path = os.path.abspath("checkpoints/PPO_2025-06-05_11-09-28/PPO_amnyam_67291_00000_0_2025-06-05_11-09-28/checkpoint_000022")
-    print(f"Loading checkpoint from: {checkpoint_path}")
-    algo.restore(checkpoint_path)
+    checkpoint_path = os.path.abspath("/Users/mihailivanov/code/amnyam/results/multiagent/two_agent_no_share/PPO_amnyam_91df7_00000_0_2025-06-16_15-28-36/checkpoint_000013")
+    # print(f"Loading checkpoint from: {checkpoint_path}")
+    # algo.restore(checkpoint_path)
 
     print("Creating inference pipeline...")
 
